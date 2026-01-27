@@ -397,27 +397,100 @@ class HalfGoalModel:
         
         summary = az.summary(self.trace)
         
+        # Get actual values
+        max_rhat = float(summary["r_hat"].max())
+        min_ess_bulk = float(summary["ess_bulk"].min())
+        min_ess_tail = float(summary["ess_tail"].min()) if "ess_tail" in summary else min_ess_bulk
+        
         # Check R-hat
         rhat_issues = summary[summary["r_hat"] > 1.05]
         if len(rhat_issues) > 0:
-            logger.warning(f"R-hat > 1.05 for {len(rhat_issues)} parameters")
+            logger.warning(f"R-hat > 1.05 for {len(rhat_issues)} parameters (max={max_rhat:.3f})")
         
         # Check ESS
         ess_issues = summary[summary["ess_bulk"] < 400]
         if len(ess_issues) > 0:
-            logger.warning(f"ESS < 400 for {len(ess_issues)} parameters")
+            logger.warning(f"ESS < 400 for {len(ess_issues)} parameters (min={min_ess_bulk:.0f})")
         
         # Check divergences
+        n_divergences = 0
         if hasattr(self.trace, "sample_stats"):
             divergences = self.trace.sample_stats.get("diverging", None)
             if divergences is not None:
-                n_div = int(np.sum(divergences.values))
-                if n_div > 0:
-                    logger.warning(f"Found {n_div} divergent samples")
+                n_divergences = int(np.sum(divergences.values))
+                if n_divergences > 0:
+                    logger.warning(f"Found {n_divergences} divergent samples")
+        
+        diagnostics = {
+            "n_divergences": n_divergences,
+            "max_rhat": max_rhat,
+            "min_ess_bulk": min_ess_bulk,
+            "min_ess_tail": min_ess_tail,
+            "n_rhat_issues": len(rhat_issues),
+            "n_ess_issues": len(ess_issues),
+            "is_healthy": n_divergences == 0 and max_rhat < 1.05 and min_ess_bulk >= 400,
+        }
+        
+        return diagnostics
+    
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """
+        Get MCMC diagnostics for model evaluation.
+        
+        Returns:
+            Dictionary with:
+                - n_divergences: Number of divergent samples
+                - max_rhat: Maximum R-hat across parameters
+                - min_ess_bulk: Minimum bulk ESS
+                - min_ess_tail: Minimum tail ESS  
+                - is_healthy: True if no issues detected
+        """
+        return self._check_diagnostics()
+    
+    def get_posterior_summary(self) -> Dict[str, Any]:
+        """
+        Get posterior summary including home advantage credible interval.
+        
+        Returns:
+            Dictionary with parameter summaries
+        """
+        if self.trace is None:
+            raise ValueError("Model not fitted")
+        
+        posterior = self.trace.posterior
+        
+        # Home advantage (this is the posterior, not a fixed value!)
+        home_adv = posterior["home_advantage"].values.flatten()
+        
+        # Convert from log scale to multiplicative effect
+        home_adv_mult = np.exp(home_adv)
         
         return {
-            "rhat_issues": len(rhat_issues),
-            "ess_issues": len(ess_issues),
+            "home_advantage": {
+                "log_scale": {
+                    "mean": float(np.mean(home_adv)),
+                    "median": float(np.median(home_adv)),
+                    "ci_5": float(np.percentile(home_adv, 5)),
+                    "ci_95": float(np.percentile(home_adv, 95)),
+                },
+                "multiplicative": {
+                    "mean": float(np.mean(home_adv_mult)),
+                    "median": float(np.median(home_adv_mult)),
+                    "ci_5": float(np.percentile(home_adv_mult, 5)),
+                    "ci_95": float(np.percentile(home_adv_mult, 95)),
+                    "interpretation": "Home team scores ~{:.0f}% more goals (median)".format(
+                        (np.median(home_adv_mult) - 1) * 100
+                    ),
+                },
+            },
+            "alpha_1": {
+                "mean": float(posterior["alpha_1"].values.mean()),
+                "expected_goals_per_team": float(np.exp(posterior["alpha_1"].values.mean())),
+            },
+            "alpha_2": {
+                "mean": float(posterior["alpha_2"].values.mean()),
+                "expected_goals_per_team": float(np.exp(posterior["alpha_2"].values.mean())),
+            },
         }
     
     def predict_match(

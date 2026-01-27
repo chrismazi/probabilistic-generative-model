@@ -30,8 +30,9 @@ class HalfGoalPriors:
     half2_effect_mean: float = 0.1  # ~10% more goals in 2H
     half2_effect_sd: float = 0.2
     
-    # Home advantage (on log scale)
-    # exp(0.2) ≈ 1.22 → 22% more goals at home
+    # Home advantage PRIOR (on log scale)
+    # Prior centered at exp(0.2) ≈ 1.22
+    # Actual value is estimated from data - see get_posterior_summary()
     home_advantage_mean: float = 0.2
     home_advantage_sd: float = 0.15
     
