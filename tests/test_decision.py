@@ -219,7 +219,7 @@ class TestDecisionEngine:
         assert decision.stake_fraction == 0
     
     def test_no_odds_strong_signal(self, engine):
-        """Strong signal without odds = SKIP."""
+        """Strong signal without odds = SIGNAL (not BET)."""
         decision = engine.make_decision(
             match_id=3,
             p_mean=0.7,
@@ -227,7 +227,7 @@ class TestDecisionEngine:
             odds=None,
         )
         
-        assert decision.decision == DecisionOutcome.SKIP
+        assert decision.decision == DecisionOutcome.SIGNAL
         assert "no odds" in decision.reason.lower()
     
     def test_invalid_probability(self, engine):

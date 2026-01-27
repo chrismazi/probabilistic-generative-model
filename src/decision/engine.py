@@ -27,35 +27,66 @@ logger = get_logger("decision.engine")
 
 class DecisionOutcome(str, Enum):
     """Decision outcome types."""
-    BET = "bet"
-    SKIP = "skip"
+    BET = "bet"  # Place bet (requires odds)
+    SIGNAL = "signal"  # Strong signal but no odds (cannot bet)
+    SKIP = "skip"  # No action
     INSUFFICIENT_EDGE = "insufficient_edge"
     BELOW_SAFETY_THRESHOLD = "below_safety_threshold"
-    MISSING_ODDS = "missing_odds"
+    MISSING_ODDS = "missing_odds"  # Deprecated, use SIGNAL instead
     INVALID_PREDICTION = "invalid_prediction"
 
 
 @dataclass
 class DecisionConfig:
-    """Configuration for decision engine."""
+    """
+    Configuration for decision engine.
+    
+    Presets:
+        - EXPERIMENTAL_CONFIG: Permissive, for testing (safety_threshold=0.6)
+        - PRODUCTION_CONFIG: Conservative, for real money (safety_threshold=0.85)
+    """
     
     # Minimum edge required to consider betting
     min_edge: float = 0.02  # 2% minimum edge
     
     # Bayesian safety threshold
     # P(p > p_be) must exceed this to bet
+    # WARNING: 0.6 is permissive. Use 0.8-0.95 for production.
     safety_threshold: float = 0.6
     
     # Kelly parameters
     kelly_fraction: float = 0.25  # Quarter Kelly
     max_bet_fraction: float = 0.05  # 5% of bankroll max
     
-    # Feature importance (without odds)
-    min_probability_gap: float = 0.05  # Gap between p and 0.5 to consider
+    # Signal threshold (without odds)
+    min_probability_gap: float = 0.05  # Gap between p and 0.5 to flag
     
     # Risk limits
     max_daily_bets: int = 10
     max_daily_exposure: float = 0.20  # 20% of bankroll
+
+
+# ============================================================
+# Preset Configurations
+# ============================================================
+
+# Experimental: Permissive settings for testing and development
+EXPERIMENTAL_CONFIG = DecisionConfig(
+    min_edge=0.02,
+    safety_threshold=0.6,  # Permissive
+    kelly_fraction=0.25,
+    max_bet_fraction=0.05,
+)
+
+# Production: Conservative settings for real money
+PRODUCTION_CONFIG = DecisionConfig(
+    min_edge=0.03,  # 3% minimum edge
+    safety_threshold=0.85,  # Very strict
+    kelly_fraction=0.15,  # Smaller fraction
+    max_bet_fraction=0.02,  # 2% max per bet
+    max_daily_bets=5,
+    max_daily_exposure=0.10,  # 10% daily max
+)
 
 
 @dataclass
@@ -177,11 +208,10 @@ class DecisionEngine:
         timestamp: datetime,
     ) -> BetDecision:
         """
-        Make decision without odds (threshold-based).
+        Make decision without odds (signal-based only).
         
-        Without odds, we can only:
-        - Flag matches with strong predictions
-        - Report confidence intervals
+        Without odds, we cannot compute real edge/EV.
+        Returns SIGNAL for strong predictions, not BET.
         """
         # Check if prediction is confident enough
         gap = abs(p_mean - 0.5)
@@ -189,7 +219,7 @@ class DecisionEngine:
         if gap < self.config.min_probability_gap:
             return BetDecision(
                 match_id=match_id,
-                decision=DecisionOutcome.INSUFFICIENT_EDGE,
+                decision=DecisionOutcome.SKIP,
                 timestamp=timestamp,
                 p_2h_gt_1h=p_mean,
                 p_2h_gt_1h_ci=p_ci,
@@ -197,17 +227,17 @@ class DecisionEngine:
                 reason=f"Probability too close to 0.5 (gap={gap:.3f})",
             )
         
-        # Strong prediction - flag for potential bet
+        # Strong prediction - SIGNAL (not BET, since we can't compute edge)
         direction = "2H > 1H" if p_mean > 0.5 else "1H > 2H"
         
         return BetDecision(
             match_id=match_id,
-            decision=DecisionOutcome.SKIP,  # Can't bet without odds
+            decision=DecisionOutcome.SIGNAL,  # Signal, not bet
             timestamp=timestamp,
             p_2h_gt_1h=p_mean,
             p_2h_gt_1h_ci=p_ci,
             odds=None,
-            reason=f"Strong signal for {direction} but no odds available",
+            reason=f"Strong signal for {direction} (no odds - cannot size bet)",
         )
     
     def _decision_with_odds(
