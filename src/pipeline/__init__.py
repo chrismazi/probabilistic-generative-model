@@ -255,3 +255,89 @@ class QualityCheckStep(PipelineStep):
                 "warning_count": report.warning_count,
             },
         )
+
+
+class FeatureBuildStep(PipelineStep):
+    """Build features for matches."""
+    
+    stage = PipelineStage.FEATURE_BUILD
+    
+    def __init__(
+        self,
+        league_ids: Optional[list[int]] = None,
+        only_upcoming: bool = True,
+        window_size: int = 10,
+    ):
+        """
+        Initialize feature build step.
+        
+        Args:
+            league_ids: League IDs to process (None = all from context)
+            only_upcoming: Only build for upcoming matches
+            window_size: Rolling window size
+        """
+        self.league_ids = league_ids
+        self.only_upcoming = only_upcoming
+        self.window_size = window_size
+    
+    def run(self, context: dict[str, Any]) -> StepResult:
+        from src.features import get_orchestrator
+        from sqlalchemy import text
+        from src.db import get_session
+        
+        started = now_utc()
+        orchestrator = get_orchestrator(window_size=self.window_size)
+        
+        # Get league IDs to process
+        league_ids = self.league_ids
+        
+        if league_ids is None:
+            # Get from context or query all active leagues
+            leagues = context.get("leagues", [])
+            if leagues:
+                with get_session() as session:
+                    result = session.execute(
+                        text("SELECT id FROM leagues WHERE code = ANY(:codes)"),
+                        {"codes": leagues}
+                    ).fetchall()
+                    league_ids = [r[0] for r in result]
+            else:
+                with get_session() as session:
+                    result = session.execute(
+                        text("SELECT id FROM leagues WHERE is_active = TRUE")
+                    ).fetchall()
+                    league_ids = [r[0] for r in result]
+        
+        total_features = 0
+        valid_features = 0
+        errors = []
+        
+        for league_id in league_ids:
+            try:
+                stats = orchestrator.build_and_store_for_league(
+                    league_id=league_id,
+                    only_upcoming=self.only_upcoming,
+                )
+                total_features += stats["total"]
+                valid_features += stats["valid"]
+                if stats["errors"] > 0:
+                    errors.append(f"League {league_id}: {stats['errors']} errors")
+            except Exception as e:
+                errors.append(f"League {league_id}: {e}")
+        
+        context["features_built"] = total_features
+        context["features_valid"] = valid_features
+        
+        return StepResult(
+            stage=self.stage,
+            success=len(errors) == 0,
+            started_at=started,
+            completed_at=now_utc(),
+            records_processed=total_features,
+            errors=errors,
+            metadata={
+                "total": total_features,
+                "valid": valid_features,
+                "invalid": total_features - valid_features,
+            },
+        )

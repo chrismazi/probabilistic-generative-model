@@ -22,6 +22,7 @@ from src.pipeline import (
     PipelineResult,
     IngestStep,
     QualityCheckStep,
+    FeatureBuildStep,
 )
 from src.utils.logging import setup_logging, get_logger
 
@@ -79,16 +80,16 @@ def run_daily_pipeline(
         fail_on_errors=fail_on_quality_errors,
     ))
     
-    # Step 3: Feature building (placeholder - to be implemented)
+    # Step 3: Feature building
     if not skip_features:
-        # TODO: Add FeatureBuildStep when implemented
-        # pipeline.add_step(FeatureBuildStep(leagues=leagues))
-        pass
+        pipeline.add_step(FeatureBuildStep(
+            only_upcoming=True,
+            window_size=10,
+        ))
     
-    # Step 4: Predictions (placeholder - to be implemented)
+    # Step 4: Predictions (placeholder - to be implemented in Phase 4)
     if not skip_predictions:
-        # TODO: Add PredictStep when implemented
-        # pipeline.add_step(PredictStep(leagues=leagues))
+        # TODO: Add PredictStep when Bayesian model is implemented
         pass
     
     # Execute
