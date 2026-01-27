@@ -1,6 +1,6 @@
-# Probabilistic Generative Model for Betting Tips
+# Probabilistic Generative Model for football match Tips
 
-A PhD-grade probabilistic model for predicting P(G₂ > G₁) — the probability that the second half of a football match has more goals than the first half.
+A probabilistic model for predicting P(G₂ > G₁) — the probability that the second half of a football match has more goals than the first half.
 
 ## Features
 
