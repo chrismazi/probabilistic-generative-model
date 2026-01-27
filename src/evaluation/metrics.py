@@ -79,10 +79,37 @@ class BrierScore:
     
     @property
     def skill_score(self) -> float:
-        """Brier Skill Score (1 = perfect, 0 = climatology, <0 = worse)."""
+        """
+        Brier Skill Score vs climatology.
+        
+        BSS = 1 - BS_model / BS_climatology
+        
+        Where BS_climatology = base_rate * (1 - base_rate) = uncertainty.
+        
+        Interpretation:
+            1 = perfect
+            0 = no better than climatology
+            <0 = worse than climatology
+        """
         if self.uncertainty == 0:
             return 0.0
         return 1 - self.score / self.uncertainty
+    
+    def skill_score_vs_reference(self, reference_brier: float) -> float:
+        """
+        Brier Skill Score vs arbitrary reference.
+        
+        BSS = 1 - BS_model / BS_reference
+        
+        Args:
+            reference_brier: Reference model's Brier score
+            
+        Returns:
+            Skill score vs that reference
+        """
+        if reference_brier == 0:
+            return 0.0
+        return 1 - self.score / reference_brier
 
 
 def log_loss(predictions: np.ndarray, outcomes: np.ndarray, eps: float = 1e-15) -> float:
@@ -151,6 +178,7 @@ class CalibrationResult:
         predictions: np.ndarray,
         outcomes: np.ndarray,
         n_bins: int = 10,
+        min_bin_count: int = 5,
     ) -> "CalibrationResult":
         """
         Compute calibration metrics.
@@ -159,9 +187,14 @@ class CalibrationResult:
             predictions: Predicted probabilities
             outcomes: Actual outcomes
             n_bins: Number of calibration bins
+            min_bin_count: Minimum samples per bin for reliable estimate
             
         Returns:
             CalibrationResult with bins and summary metrics
+            
+        Note:
+            Bins with fewer than min_bin_count samples are still included
+            but flagged in the output. Use caution with small samples.
         """
         n = len(predictions)
         if n == 0:
