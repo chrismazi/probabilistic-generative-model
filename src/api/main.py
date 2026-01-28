@@ -9,8 +9,14 @@ FastAPI backend serving:
 
 IMPORTANT: All outputs clearly labeled with:
 - Probabilities + credible intervals
-- Model health status
+- Model health status (including training data scope)
 - SIGNAL vs BET distinction
+
+CRITICAL LIMITATIONS (as of Jan 2025):
+- Model is currently trained on PREMIER LEAGUE data only
+- When serving predictions for other leagues (BL1, SA, PD, FL1),
+  the model uses PL parameters - these predictions may not be accurate
+- This is disclosed in the API response via `training_scope` field
 """
 
 from datetime import datetime, date, timedelta, timezone
@@ -27,6 +33,29 @@ from src.db import get_session
 from sqlalchemy import text
 from src.decision import DecisionEngine, EXPERIMENTAL_CONFIG, PRODUCTION_CONFIG, DecisionOutcome
 from src.utils import get_logger
+
+
+# =============================================================================
+# Timezone Utility
+# =============================================================================
+
+def ensure_utc(dt: datetime) -> datetime:
+    """
+    Ensure datetime is in UTC with proper 'Z' suffix serialization.
+    
+    Fixes issue where datetimes are stored with local TZ offset (e.g., +02:00)
+    but field is named 'utc'. This converts to actual UTC.
+    """
+    if dt is None:
+        return None
+    
+    # If naive datetime, assume it was meant to be UTC
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    
+    # Convert to UTC if it has a different timezone
+    return dt.astimezone(timezone.utc)
+
 
 logger = get_logger("api")
 
@@ -68,6 +97,23 @@ class FitMode(str, Enum):
     PRODUCTION = "production"  # Full fit meeting all diagnostic thresholds
 
 
+class TrainingScope(BaseModel):
+    """Describes what data the model was trained on - critical for transparency."""
+    
+    leagues: List[str] = Field(description="League codes included in training data")
+    n_matches: int = Field(description="Number of matches used for training")
+    date_range: Optional[str] = Field(None, description="Date range of training data")
+    
+    # Cross-league applicability warning
+    applies_to_requested_league: bool = Field(
+        description="True if model was trained on data from the requested league"
+    )
+    cross_league_warning: Optional[str] = Field(
+        None, 
+        description="Warning if applying model outside its training domain"
+    )
+
+
 class ModelDiagnostics(BaseModel):
     """Model health diagnostics."""
     
@@ -78,8 +124,19 @@ class ModelDiagnostics(BaseModel):
     min_ess: int = Field(description="Minimum effective sample size (should be > 400)")
     warning: Optional[str] = Field(None, description="Warning message if unhealthy")
     
+    # Training scope - critical for multi-league honesty
+    training_scope: Optional[TrainingScope] = Field(
+        None,
+        description="What data the model was trained on - check this before trusting predictions!"
+    )
+    
     @classmethod
-    def from_fit_summary(cls, diagnostics: Dict[str, Any], fit_mode: FitMode = FitMode.SMOKE) -> "ModelDiagnostics":
+    def from_fit_summary(
+        cls, 
+        diagnostics: Dict[str, Any], 
+        fit_mode: FitMode = FitMode.SMOKE,
+        training_scope: Optional[TrainingScope] = None
+    ) -> "ModelDiagnostics":
         warning = None
         if not diagnostics.get("is_healthy", False):
             warnings = []
@@ -98,6 +155,7 @@ class ModelDiagnostics(BaseModel):
             max_rhat=diagnostics.get("max_rhat", 1.0),
             min_ess=int(diagnostics.get("min_ess_bulk", 0)),
             warning=warning,
+            training_scope=training_scope,
         )
 
 
@@ -333,7 +391,7 @@ async def get_upcoming_predictions(
             match_id=match_id,
             home_team=home_team,
             away_team=away_team,
-            kickoff_utc=kickoff,
+            kickoff_utc=ensure_utc(kickoff),  # Ensure proper UTC format
             p_2h_gt_1h=prediction_uncertainty,
             decision=decision.decision.value,
             decision_reason=decision.reason,
@@ -341,6 +399,21 @@ async def get_upcoming_predictions(
             stake_fraction=decision.stake_fraction if decision.decision == DecisionOutcome.BET else None,
             expected_value=decision.expected_value if decision.decision == DecisionOutcome.BET else None,
         ))
+    
+    # Build training scope with honest disclosure
+    # CRITICAL: Model is currently PL-only!
+    is_pl = league.upper() == "PL"
+    training_scope = TrainingScope(
+        leagues=["PL"],  # Currently only Premier League
+        n_matches=300,   # Training used 300 matches
+        date_range="2024-2025 season (most recent 300 matches)",
+        applies_to_requested_league=is_pl,
+        cross_league_warning=None if is_pl else (
+            f"⚠️ Model trained on PL data only. Predictions for {league.upper()} "
+            f"use Premier League parameters and may not be accurate. "
+            f"For reliable {league.upper()} predictions, train a league-specific or multi-league model."
+        )
+    )
     
     # Model diagnostics (smoke fit - not production grade)
     diagnostics = ModelDiagnostics(
@@ -350,19 +423,25 @@ async def get_upcoming_predictions(
         max_rhat=1.02,
         min_ess=139,
         warning="SMOKE FIT: ESS=139 < 400; R-hat=1.02 > 1.01. Refit with more samples for production use.",
+        training_scope=training_scope,  # Include training scope
     )
+    
+    # Build message with cross-league warning if applicable
+    base_message = "Pipeline operational in smoke-fit mode. Refit with production settings before trusting signals."
+    if not is_pl:
+        base_message = f"⚠️ CROSS-LEAGUE WARNING: {training_scope.cross_league_warning}\n\n{base_message}"
     
     return PredictionsResponse(
         generated_at_utc=datetime.now(timezone.utc),
-        model_version="poisson_v1_20260128",
-        data_cutoff_utc=datetime(2026, 1, 27, 12, 0),  # Last training data
+        model_version="poisson_v1_20260128_PL",  # Added _PL suffix for clarity
+        data_cutoff_utc=datetime(2026, 1, 27, 12, 0, tzinfo=timezone.utc),  # Explicit UTC
         model_diagnostics=diagnostics,
         league=league,
         predictions=predictions,
         total_matches=len(predictions),
         signals_count=signals_count,
         bets_count=bets_count,
-        message="Pipeline operational in smoke-fit mode. Refit with production settings before trusting signals.",
+        message=base_message,
     )
 
 
@@ -414,7 +493,7 @@ async def get_recent_results(
             match_id=match_id,
             home_team=home_team,
             away_team=away_team,
-            kickoff_utc=kickoff,
+            kickoff_utc=ensure_utc(kickoff),  # Ensure proper UTC format
             ht_home=ht_h,
             ht_away=ht_a,
             ft_home=ft_h,

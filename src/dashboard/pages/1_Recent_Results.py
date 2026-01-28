@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide",
 )
 
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = "http://localhost:8080"
 
 
 def get_api_data(endpoint: str, params: dict = None) -> dict:

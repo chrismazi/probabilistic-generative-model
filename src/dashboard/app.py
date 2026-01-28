@@ -7,7 +7,7 @@ This dashboard ONLY reads from the API. It does NOT:
 - Run MCMC
 - Touch raw DB tables directly
 
-All data comes from: http://localhost:8000/api/v1/...
+All data comes from: http://localhost:8080/api/v1/...
 """
 
 import streamlit as st
@@ -28,7 +28,7 @@ import pandas as pd
 # API Configuration
 # =============================================================================
 
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = "http://localhost:8080"
 
 
 def get_api_data(endpoint: str, params: dict = None) -> dict:
