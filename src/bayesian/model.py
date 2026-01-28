@@ -353,12 +353,13 @@ class HalfGoalModel:
         logger.info("Model built successfully")
         return model
     
-    def fit(self, data: TrainingData) -> az.InferenceData:
+    def fit(self, data: TrainingData, use_jax: bool = True) -> az.InferenceData:
         """
         Fit model using NUTS.
         
         Args:
             data: Training data
+            use_jax: If True, use JAX/NumPyro sampling (much faster)
             
         Returns:
             ArviZ InferenceData with posterior samples
@@ -375,14 +376,31 @@ class HalfGoalModel:
         )
         
         with self.model:
-            self.trace = pm.sample(
-                draws=self.config.n_samples,
-                tune=self.config.n_tune,
-                chains=self.config.n_chains,
-                target_accept=self.config.target_accept,
-                random_seed=self.config.random_seed,
-                return_inferencedata=True,
-            )
+            if use_jax:
+                try:
+                    from pymc.sampling.jax import sample_numpyro_nuts
+                    logger.info("Using JAX/NumPyro sampling (fast)")
+                    self.trace = sample_numpyro_nuts(
+                        draws=self.config.n_samples,
+                        tune=self.config.n_tune,
+                        chains=self.config.n_chains,
+                        target_accept=self.config.target_accept,
+                        random_seed=self.config.random_seed,
+                        progressbar=True,
+                    )
+                except ImportError:
+                    logger.warning("JAX not available, falling back to PyMC sampling")
+                    use_jax = False
+            
+            if not use_jax:
+                self.trace = pm.sample(
+                    draws=self.config.n_samples,
+                    tune=self.config.n_tune,
+                    chains=self.config.n_chains,
+                    target_accept=self.config.target_accept,
+                    random_seed=self.config.random_seed,
+                    return_inferencedata=True,
+                )
         
         # Check diagnostics
         self._check_diagnostics()
