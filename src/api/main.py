@@ -13,7 +13,7 @@ IMPORTANT: All outputs clearly labeled with:
 - SIGNAL vs BET distinction
 """
 
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from enum import Enum
 
@@ -62,17 +62,24 @@ app.add_middleware(
 # Response Models
 # =============================================================================
 
+class FitMode(str, Enum):
+    """Model fit mode."""
+    SMOKE = "smoke"  # Quick fit for testing (may not meet production thresholds)
+    PRODUCTION = "production"  # Full fit meeting all diagnostic thresholds
+
+
 class ModelDiagnostics(BaseModel):
     """Model health diagnostics."""
     
     is_healthy: bool = Field(description="True if model passes all diagnostic checks")
+    fit_mode: FitMode = Field(description="'smoke' = quick test fit, 'production' = full fit")
     n_divergences: int = Field(description="Number of divergent transitions (should be 0)")
     max_rhat: float = Field(description="Highest R-hat (should be < 1.01)")
     min_ess: int = Field(description="Minimum effective sample size (should be > 400)")
     warning: Optional[str] = Field(None, description="Warning message if unhealthy")
     
     @classmethod
-    def from_fit_summary(cls, diagnostics: Dict[str, Any]) -> "ModelDiagnostics":
+    def from_fit_summary(cls, diagnostics: Dict[str, Any], fit_mode: FitMode = FitMode.SMOKE) -> "ModelDiagnostics":
         warning = None
         if not diagnostics.get("is_healthy", False):
             warnings = []
@@ -86,6 +93,7 @@ class ModelDiagnostics(BaseModel):
         
         return cls(
             is_healthy=diagnostics.get("is_healthy", False),
+            fit_mode=fit_mode,
             n_divergences=diagnostics.get("n_divergences", 0),
             max_rhat=diagnostics.get("max_rhat", 1.0),
             min_ess=int(diagnostics.get("min_ess_bulk", 0)),
@@ -134,8 +142,12 @@ class MatchPrediction(BaseModel):
 class PredictionsResponse(BaseModel):
     """Response with predictions and model status."""
     
-    generated_at: datetime
-    model_version: str
+    # Versioning (critical for debugging)
+    generated_at_utc: datetime = Field(description="When this response was generated")
+    model_version: str = Field(description="Model version identifier")
+    data_cutoff_utc: Optional[datetime] = Field(None, description="Latest match included in training")
+    
+    # Model status
     model_diagnostics: ModelDiagnostics = Field(
         description="ALWAYS check this before trusting predictions"
     )
@@ -147,6 +159,9 @@ class PredictionsResponse(BaseModel):
     total_matches: int
     signals_count: int = Field(description="Matches with strong signal (no odds)")
     bets_count: int = Field(description="Actionable bets (with odds)")
+    
+    # Status message
+    message: Optional[str] = Field(None, description="Status message or warning")
 
 
 class MatchResult(BaseModel):
@@ -250,8 +265,29 @@ async def get_upcoming_predictions(
             ORDER BY m.kickoff_utc
         """), {"league": league, "days_ahead": days_ahead}).fetchall()
     
+    # Handle empty case gracefully (no 500 errors)
     if not result:
-        raise HTTPException(status_code=404, detail=f"No upcoming matches for {league}")
+        # Return empty response with clear message instead of 404
+        diagnostics = ModelDiagnostics(
+            is_healthy=False,
+            fit_mode=FitMode.SMOKE,
+            n_divergences=0,
+            max_rhat=1.0,
+            min_ess=0,
+            warning="No predictions available",
+        )
+        return PredictionsResponse(
+            generated_at_utc=datetime.now(timezone.utc),
+            model_version="poisson_v1_20260128",
+            data_cutoff_utc=None,
+            model_diagnostics=diagnostics,
+            league=league,
+            predictions=[],
+            total_matches=0,
+            signals_count=0,
+            bets_count=0,
+            message=f"No upcoming matches for {league} in next {days_ahead} days. Run ingestion pipeline.",
+        )
     
     # Decision engine
     config = PRODUCTION_CONFIG if use_production_config else EXPERIMENTAL_CONFIG
@@ -306,24 +342,27 @@ async def get_upcoming_predictions(
             expected_value=decision.expected_value if decision.decision == DecisionOutcome.BET else None,
         ))
     
-    # Model diagnostics (mock for now - would load from saved model)
+    # Model diagnostics (smoke fit - not production grade)
     diagnostics = ModelDiagnostics(
         is_healthy=False,  # Honest: our quick fit wasn't fully healthy
+        fit_mode=FitMode.SMOKE,  # Clearly labeled as smoke fit
         n_divergences=0,
         max_rhat=1.02,
         min_ess=139,
-        warning="ESS=139 < 400; R-hat=1.02 > 1.01. Refit with more samples for production use.",
+        warning="SMOKE FIT: ESS=139 < 400; R-hat=1.02 > 1.01. Refit with more samples for production use.",
     )
     
     return PredictionsResponse(
-        generated_at=datetime.now(),
+        generated_at_utc=datetime.now(timezone.utc),
         model_version="poisson_v1_20260128",
+        data_cutoff_utc=datetime(2026, 1, 27, 12, 0),  # Last training data
         model_diagnostics=diagnostics,
         league=league,
         predictions=predictions,
         total_matches=len(predictions),
         signals_count=signals_count,
         bets_count=bets_count,
+        message="Pipeline operational in smoke-fit mode. Refit with production settings before trusting signals.",
     )
 
 

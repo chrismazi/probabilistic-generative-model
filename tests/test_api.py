@@ -52,21 +52,23 @@ class TestPredictionsEndpoint:
         """Get upcoming predictions."""
         response = client.get("/api/v1/predictions/upcoming?league=PL")
         
-        # May return 404 if no upcoming matches, or 200 with data
-        assert response.status_code in [200, 404]
+        # Should always return 200 now (empty case handled gracefully)
+        assert response.status_code == 200
         
-        if response.status_code == 200:
-            data = response.json()
-            assert "model_diagnostics" in data
-            assert "predictions" in data
-            assert "generated_at" in data
-            
-            # Check model diagnostics structure
-            diagnostics = data["model_diagnostics"]
-            assert "is_healthy" in diagnostics
-            assert "n_divergences" in diagnostics
-            assert "max_rhat" in diagnostics
-            assert "min_ess" in diagnostics
+        data = response.json()
+        assert "model_diagnostics" in data
+        assert "predictions" in data
+        assert "generated_at_utc" in data
+        assert "data_cutoff_utc" in data
+        assert "message" in data
+        
+        # Check model diagnostics structure
+        diagnostics = data["model_diagnostics"]
+        assert "is_healthy" in diagnostics
+        assert "fit_mode" in diagnostics  # New field
+        assert "n_divergences" in diagnostics
+        assert "max_rhat" in diagnostics
+        assert "min_ess" in diagnostics
     
     def test_predictions_response_has_uncertainty(self, client):
         """Predictions include uncertainty."""
